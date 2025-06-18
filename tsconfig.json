@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "commonjs",
+    "lib": ["ESNext", "DOM"],
+    "strict": true,
+    "esModuleInterop": true,
+    "moduleResolution": "node",
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "types": ["node", "@playwright/test"]   }
+
+,
+  "include": ["tests/**/*.ts", "utils/**/*.ts", "disconnect-metamask-sites.ts"]
+}
