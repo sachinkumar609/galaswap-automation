@@ -27,80 +27,99 @@ export class WalletSetup {
     };
   }
 
+  /**
+   * Waits for MetaMask loading overlay to disappear, if present.
+   */
+  private async waitForOverlayGone(page: Page) {
+    await page.locator('.mm-box.loading-overlay').waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+  }
+
   async unlockWallet(popup: Page): Promise<void> {
-  console.log('🔑 Unlocking MetaMask...');
-  // Check if unlock UI is present
-  const passwordInput = popup.getByLabel('Password', { exact: false });
-  const unlockButton = popup.getByRole('button', { name: /unlock/i });
-  const pwVisible = await passwordInput.isVisible({ timeout: 2000 }).catch(() => false);
-  const btnVisible = await unlockButton.isVisible({ timeout: 2000 }).catch(() => false);
-
-  if (pwVisible && btnVisible) {
-    let unlocked = false;
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      try {
-        await popup.bringToFront();
-        await popup.waitForLoadState('domcontentloaded');
-        if (await passwordInput.isVisible({ timeout: 1000 }).catch(() => false) &&
-            await unlockButton.isVisible({ timeout: 1000 }).catch(() => false)) {
-          await passwordInput.fill(this.options.password);
-          await unlockButton.click();
-          console.log(`✅ Wallet unlocked via password (attempt ${attempt})`);
-          unlocked = true;
-          break;
-        }
-      } catch (error) {
-        console.warn(`⚠️ [Attempt ${attempt}] Error during wallet unlock:`, error);
-      }
-      await popup.waitForTimeout(1000);
+    if (!popup || popup.isClosed()) {
+      console.warn('⚠️ unlockWallet: Target popup is closed or missing.');
+      return;
     }
-    if (!unlocked) throw new Error('❌ Failed to unlock wallet after multiple attempts');
-  } else {
-    console.log('ℹ️ Unlock screen not visible or already unlocked');
-  }
-}
+    console.log('🔑 Unlocking MetaMask...');
+    await this.waitForOverlayGone(popup);
 
-async confirmTransaction(popup: Page): Promise<void> {
-  console.log('⏳ Waiting for transaction confirmation...');
-  // Check if confirm/sign/connect UI is present
-  const confirmButton = popup.getByRole('button', { name: /confirm|sign|connect|approve|ok|next/i });
-  const btnVisible = await confirmButton.isVisible({ timeout: 2000 }).catch(() => false);
+    const passwordInput = popup.getByLabel('Password', { exact: false });
+    const unlockButton = popup.getByRole('button', { name: /unlock/i });
+    const pwVisible = await passwordInput.isVisible({ timeout: 2000 }).catch(() => false);
+    const btnVisible = await unlockButton.isVisible({ timeout: 2000 }).catch(() => false);
 
-  if (btnVisible) {
-    let confirmed = false;
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      try {
-        await popup.bringToFront();
-        await popup.waitForLoadState('domcontentloaded');
-        if (await confirmButton.isVisible({ timeout: 1000 }).catch(() => false)) {
-          await confirmButton.click();
-          console.log(`✅ Transaction confirmed (attempt ${attempt})`);
-          confirmed = true;
-          break;
+    if (pwVisible && btnVisible) {
+      let unlocked = false;
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        try {
+          if (popup.isClosed()) throw new Error('Popup closed during unlock');
+          await popup.bringToFront();
+          await this.waitForOverlayGone(popup);
+          await popup.waitForLoadState('domcontentloaded');
+          if (await passwordInput.isVisible({ timeout: 1000 }).catch(() => false) &&
+              await unlockButton.isVisible({ timeout: 1000 }).catch(() => false)) {
+            await passwordInput.fill(this.options.password);
+            await unlockButton.click();
+            console.log(`✅ Wallet unlocked via password (attempt ${attempt})`);
+            unlocked = true;
+            break;
+          }
+        } catch (error) {
+          console.warn(`⚠️ [Attempt ${attempt}] Error during wallet unlock:`, error);
         }
-      } catch (error) {
-        console.warn(`⚠️ [Attempt ${attempt}] Error during confirm transaction:`, error);
+        await popup.waitForTimeout(1000);
       }
-      await popup.waitForTimeout(1000);
+      if (!unlocked) throw new Error('❌ Failed to unlock wallet after multiple attempts');
+    } else {
+      console.log('ℹ️ Unlock screen not visible or already unlocked');
     }
-    if (!confirmed) throw new Error('❌ Failed to confirm transaction after multiple attempts');
-  } else {
-    console.log('ℹ️ No confirm/sign/connect/approve/ok/next button visible (may already be confirmed)');
   }
-}
 
+  async confirmTransaction(popup: Page): Promise<void> {
+    if (!popup || popup.isClosed()) {
+      console.warn('⚠️ confirmTransaction: Target popup is closed or missing.');
+      return;
+    }
+    console.log('⏳ Waiting for transaction confirmation...');
+    await this.waitForOverlayGone(popup);
+
+    const confirmButton = popup.getByRole('button', { name: /confirm|sign|connect|approve|ok|next/i });
+    const btnVisible = await confirmButton.isVisible({ timeout: 2000 }).catch(() => false);
+
+    if (btnVisible) {
+      let confirmed = false;
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        try {
+          if (popup.isClosed()) throw new Error('Popup closed during confirm');
+          await popup.bringToFront();
+          await this.waitForOverlayGone(popup);
+          await popup.waitForLoadState('domcontentloaded');
+          if (await confirmButton.isVisible({ timeout: 1000 }).catch(() => false)) {
+            await confirmButton.click();
+            console.log(`✅ Transaction confirmed (attempt ${attempt})`);
+            confirmed = true;
+            break;
+          }
+        } catch (error) {
+          console.warn(`⚠️ [Attempt ${attempt}] Error during confirm transaction:`, error);
+        }
+        await popup.waitForTimeout(1000);
+      }
+      if (!confirmed) throw new Error('❌ Failed to confirm transaction after multiple attempts');
+    } else {
+      console.log('ℹ️ No confirm/sign/connect/approve/ok/next button visible (may already be confirmed)');
+    }
+  }
 
   async handlePopup(): Promise<Page> {
+    // Finds or waits for a MetaMask popup
     console.log('⏳ Waiting for MetaMask popup...');
-    // Check for already-open popup first
-    const popup = this.context.pages().find(p => 
-      p.url().startsWith('chrome-extension://') && !p.url().endsWith('/home.html')
+    const popup = this.context.pages().find(p =>
+      !p.isClosed() && p.url().startsWith('chrome-extension://') && !p.url().endsWith('/home.html')
     );
     if (popup) {
       console.log('✅ Found already opened MetaMask popup');
       return popup;
     }
-    // Else wait for a new popup
     const newPopup = await this.context.waitForEvent('page', { timeout: 25000 });
     console.log('✅ MetaMask popup opened');
     return newPopup;
@@ -112,11 +131,12 @@ async confirmTransaction(popup: Page): Promise<void> {
     const maxTries = 5;
     do {
       const popups = this.context.pages().filter(
-        page => page.url().startsWith('chrome-extension://') && !page.url().endsWith('/home.html')
+        page => !page.isClosed() && page.url().startsWith('chrome-extension://') && !page.url().endsWith('/home.html')
       );
       if (popups.length) {
         for (const popup of popups) {
           try {
+            if (popup.isClosed()) continue;
             await popup.bringToFront();
             await this.unlockWallet(popup);
             await this.confirmTransaction(popup);
@@ -139,7 +159,6 @@ async confirmTransaction(popup: Page): Promise<void> {
     try {
       const popup = await this.handlePopup();
       await this.unlockWallet(popup);
-      // Try to find the network/chain button by multiple labels
       const networkButton = popup.getByRole('button', { name: /network|chain|ethereum/i });
       await networkButton.click();
       const networkOption = popup.getByRole('button', { name: new RegExp(network, 'i') });
@@ -152,6 +171,7 @@ async confirmTransaction(popup: Page): Promise<void> {
   }
 
   async verifyConnection(page: Page): Promise<string> {
+    if (!page || page.isClosed()) throw new Error('❌ Cannot verify connection on closed page');
     console.log('⏳ Verifying wallet connection...');
     try {
       const profileDropdown = page.locator('#dropdown-basic');
@@ -187,7 +207,7 @@ async confirmTransaction(popup: Page): Promise<void> {
     try {
       const pages = this.context.pages();
       await Promise.all(pages.map(p => p.waitForLoadState('domcontentloaded')));
-      let extensionPage = pages.find(p => p.url().startsWith('chrome-extension://'));
+      let extensionPage = pages.find(p => !p.isClosed() && p.url().startsWith('chrome-extension://'));
       if (!extensionPage) {
         extensionPage = await this.context.waitForEvent('page', { timeout: 10000 });
         await extensionPage.waitForLoadState('domcontentloaded');
@@ -205,24 +225,28 @@ async confirmTransaction(popup: Page): Promise<void> {
   }
 
   private async setupMetaMask(page: Page): Promise<void> {
-    // Check if onboarding screen is visible
+    if (!page || page.isClosed()) throw new Error('MetaMask extension page not available');
+    await this.waitForOverlayGone(page);
+
     const onboardingCheckbox = page.locator('[data-testid="onboarding-terms-checkbox"]');
     if (await onboardingCheckbox.isVisible().catch(() => false)) {
       console.log('🧭 Starting MetaMask onboarding...');
       await onboardingCheckbox.click();
-      // Import wallet flow, robust to future UI wording
       await page.getByRole('button', { name: /import an existing wallet/i }).click();
       await page.getByRole('button', { name: /i agree/i }).click();
+
       const mnemonic = this.options.mnemonic;
       console.log('🔐 Filling seed phrase...');
       for (let i = 0; i < mnemonic.length; i++) {
         await page.locator(`#import-srp__srp-word-${i}`).fill(mnemonic[i]);
       }
+
       await page.getByRole('button', { name: /confirm secret recovery phrase|confirm/i }).click();
       await page.locator('[data-testid="create-password-new"]').fill(this.options.password);
       await page.locator('[data-testid="create-password-confirm"]').fill(this.options.password);
       //await page.locator('input[type="checkbox"]').first().check();
       await page.getByRole('button', { name: /import my wallet/i }).click();
+
       // Sometimes there are multiple 'Done', 'Next', etc.
       for (let i = 0; i < 3; i++) {
         const nextBtn = page.getByRole('button', { name: /done|next|got it|close/i });

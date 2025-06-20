@@ -3,7 +3,7 @@ import { MetaMaskConnector } from '../MetaMaskConnector';
 import { WalletSetup } from '../walletSetup';
 import { SwapPage } from '../pages/SwapPage';
 
-const extensionPath = '/home/user/playwrightMetamask/tsPlay/metamask';
+const extensionPath = '/home/user/playwrightMetamask/galaSwap-automation/metamask';
 const dappUrl = 'https://dex-frontend-qa1.defi.gala.com/';
 
 let dappPage: Page | undefined;

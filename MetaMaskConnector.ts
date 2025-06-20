@@ -3,24 +3,23 @@ import path from 'path';
 import fs from 'fs';
 import { clearBrowserContext } from './clearContext';
 
-// Type for wallet setup (customize as needed)
-type WalletSetupClass = {
-  new (context: BrowserContext): {
-    setupWallet: () => Promise<void>;
-    unlockWallet: (page: Page) => Promise<void>;
-    confirmTransaction: (page: Page) => Promise<void>;
-    verifyConnection: (page: Page) => Promise<string>;
-  }
+// Type for wallet setup
+type WalletSetup = {
+  setupWallet(): Promise<void>;
+  unlockWallet(page: Page): Promise<void>;
+  confirmTransaction(page: Page): Promise<void>;
+  verifyConnection(page: Page): Promise<string>;
 };
+type WalletSetupClass = new (context: BrowserContext) => WalletSetup;
 
 export class MetaMaskConnector {
   context: BrowserContext | undefined;
   extensionId: string | undefined;
-  wallet?: InstanceType<WalletSetupClass>;
+  wallet?: WalletSetup;
 
   constructor(
     private walletSetupClass: WalletSetupClass,
-    private extensionPath: string = '/home/user/playwrightMetamask/tsPlaycopy/metamask',
+    private extensionPath: string = '/home/user/playwrightMetamask/galaSwap-automation/metamask',
     private userDataDir: string = path.resolve(__dirname, '../user-data')
   ) {}
 
@@ -37,10 +36,11 @@ export class MetaMaskConnector {
         `--disable-extensions-except=${this.extensionPath}`,
         `--load-extension=${this.extensionPath}`,
       ],
-    viewport: { width: 1680, height: 1050 },
+      viewport: { width: 1680, height: 1050 },
       // slowMo: 200,
     });
 
+    // Wait for MetaMask extension's service worker to load
     let [background] = this.context.serviceWorkers();
     if (!background) background = await this.context.waitForEvent('serviceworker');
     const match = background.url().match(/^chrome-extension:\/\/([a-z]+)\//);
@@ -66,20 +66,18 @@ export class MetaMaskConnector {
     // 2. Open dApp
     const dappPage = await this.context.newPage();
     await dappPage.bringToFront();
-    const popupPromise = this.context.waitForEvent('page');
     await dappPage.goto(dappUrl);
     await dappPage.waitForLoadState('networkidle');
-    await dappPage.waitForLoadState('domcontentloaded');
     await dappPage.waitForTimeout(1000); // Allow dApp to initialize
 
-    // 3. Listen for MetaMask popup before interaction
-   
-
-    // 4. dApp connect flow
+    // 3. Determine connect flow
     const connectButton = dappPage.getByRole('button', { name: /connect wallet/i }).first();
     const profileDropdown = dappPage.locator('#dropdown-basic');
+    let popupPromise: Promise<Page> | undefined;
 
     if (await connectButton.isVisible({ timeout: 10000 }).catch(() => false)) {
+      // Listen for MetaMask popup if connect is triggered
+      popupPromise = this.context.waitForEvent('page');
       await connectButton.click();
 
       const metamaskOption = dappPage.getByRole('button', { name: /metamask/i });
@@ -87,70 +85,68 @@ export class MetaMaskConnector {
       await metamaskOption.click();
       console.log('🟢 Triggered dApp connect wallet flow.');
     } else if (await profileDropdown.isVisible({ timeout: 30000 }).catch(() => false)) {
-      // If profile dropdown is visible, wallet is already connected
+      // Already connected, no popup needed
       console.log('🟢 Wallet already connected, skipping connect flow.');
       await this.wallet.unlockWallet(dappPage);
-
-  
-      await dappPage.bringToFront();
-       await this.closeOtherExtensionPages(dappPage);
+      await this.safeBringToFront(dappPage);
+      await this.closeOtherExtensionPages(dappPage);
     }
 
-    // 5. Get the MetaMask popup (could be unlock only, or confirm+unlock)
-    let popup: Page;
-    try {
-      popup = await popupPromise;
-      await popup.waitForLoadState('domcontentloaded');
-    } catch {
-      // Fallback: find popup manually
-      const foundPopup = this.context.pages().find(
-        p => p.url().startsWith('chrome-extension://') && !p.url().endsWith('/home.html')
-      );
-      if (!foundPopup) {
-        // Debug output: list all open page URLs
-        const openUrls = this.context.pages().map(p => p.url());
-        throw new Error(`Could not find MetaMask popup. Open pages: ${JSON.stringify(openUrls)}`);
+    // 4. Handle MetaMask popup (if present)
+    let popup: Page | undefined;
+    if (popupPromise) {
+      try {
+        popup = await popupPromise;
+        await popup.waitForLoadState('domcontentloaded');
+      } catch {
+        // Fallback: find popup manually
+        const foundPopup = this.context.pages().find(
+          p => !p.isClosed() && p.url().startsWith('chrome-extension://') && !p.url().endsWith('/home.html')
+        );
+        if (!foundPopup) {
+          const openUrls = this.context.pages().map(p => p.url());
+          throw new Error(`Could not find MetaMask popup. Open pages: ${JSON.stringify(openUrls)}`);
+        }
+        popup = foundPopup;
+        await popup.waitForLoadState('domcontentloaded');
+        await this.safeBringToFront(popup);
+        await this.wallet.unlockWallet(popup);
       }
-      popup = foundPopup;
-      await popup.waitForLoadState('domcontentloaded');
-      await popup.bringToFront();
+    }
+
+    // 5. Bring popup to front and unlock wallet if needed
+    if (popup && !popup.isClosed()) {
+      for (let i = 0; i < 5; i++) {
+        try {
+          await popup.waitForTimeout(2000);
+          await this.safeBringToFront(popup);
+          const pwInput = popup.getByLabel('Password', { exact: false });
+          if (await pwInput.isVisible({ timeout: 3000 }).catch(() => false)) break;
+        } catch {
+          await new Promise(res => setTimeout(res, 500));
+        }
+      }
       await this.wallet.unlockWallet(popup);
 
-    }
-
-    // 6. Bring popup to front, retry if needed
-    for (let i = 0; i < 5; i++) {
-      try {
-        await popup.waitForTimeout(2000);
-        await popup.bringToFront();
-        const pwInput = popup.getByLabel('Password', { exact: false });
-        if (await pwInput.isVisible({ timeout: 3000 }).catch(() => false)) break;
-      } catch {
-        await new Promise(res => setTimeout(res, 500));
+      // 6. Confirm connection/transaction if needed
+      const confirmBtn = popup.getByRole('button', { name: /confirm|sign|connect|approve|ok|next/i });
+      const confirmBtnVisible = await confirmBtn.isVisible({ timeout: 10000 }).catch(() => false);
+      if (confirmBtnVisible) {
+        await this.wallet.confirmTransaction(popup);
+      } else {
+        console.log('🔗 No confirm needed, only unlock performed.');
       }
     }
 
-    // 7. Unlock wallet if needed
-    await this.wallet.unlockWallet(popup);
-
-    // 8. Confirm connection/transaction if needed
-    const confirmBtn = popup.getByRole('button', { name: /confirm|sign|connect|approve|ok|next/i });
-    const confirmBtnVisible = await confirmBtn.isVisible({ timeout: 10000 }).catch(() => false);
-    if (confirmBtnVisible) {
-      await this.wallet.confirmTransaction(popup);
-    } else {
-      console.log('🔗 No confirm needed, only unlock performed.');
-    }
-
-    // 9. Cleanup: close all extension popups except main dApp page
+    // 7. Cleanup: close all extension popups except main dApp page
     await this.closeOtherExtensionPages(dappPage);
 
-    // 10. Finalize: bring dApp to front and verify connection
-    await dappPage.bringToFront();
+    // 8. Finalize: bring dApp to front and verify connection
+    await this.safeBringToFront(dappPage);
     const address = await this.wallet.verifyConnection(dappPage);
 
     // Optionally close the popup if it's still open
-    if (!popup.isClosed()) {
+    if (popup && !popup.isClosed()) {
       await popup.close().catch(() => {});
     }
 
@@ -163,23 +159,23 @@ export class MetaMaskConnector {
   private async closeOtherExtensionPages(dappPage: Page) {
     if (!this.context) return;
     for (const p of this.context.pages()) {
+      if (p.isClosed()) continue;
       const url = p.url();
       if (url.startsWith('chrome-extension://') && !url.endsWith('/home.html')) {
-        try {
-          if (this.wallet) await this.wallet.unlockWallet(p);
-        } catch {}
-        try {
-          if (this.wallet) await this.wallet.confirmTransaction(p);
-        } catch {}
-        if (p !== dappPage && !p.isClosed()) {
-          try {
-            await p.close();
-          } catch {}
+        try { if (this.wallet) await this.wallet.unlockWallet(p); } catch {}
+        try { if (this.wallet) await this.wallet.confirmTransaction(p); } catch {}
+        if (p !== dappPage) {
+          try { await p.close(); } catch {}
         }
       }
     }
-    // Always restore focus to the main page
-    await dappPage.bringToFront();
+    await this.safeBringToFront(dappPage);
+  }
+
+  private async safeBringToFront(page: Page) {
+    try {
+      if (!page.isClosed()) await page.bringToFront();
+    } catch {}
   }
 
   async resetContext(): Promise<void> {
